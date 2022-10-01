@@ -1,6 +1,7 @@
 """ An implementation of an occupancy field that you can use to implement
     your particle filter """
 
+from math import isinf
 import rclpy
 from nav_msgs.srv import GetMap
 import numpy as np
@@ -93,6 +94,8 @@ class OccupancyField(object):
             x_coord = x_coord.astype(np.int)
             y_coord = y_coord.astype(np.int)
         else:
+            if isinf(x_coord) or isinf(y_coord):
+                return float("nan")
             x_coord = int(x_coord)
             y_coord = int(y_coord)
 

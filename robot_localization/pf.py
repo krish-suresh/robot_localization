@@ -50,9 +50,9 @@ class Particle(object):
                     orientation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]))
 
     def transform_points_particle_to_map_frame(self, points):
-        rotation_mat = np.array([[np.cos(self.theta), np.sin(self.theta)],[-np.sin(self.theta), np.cos(self.theta)]])
-        translation = np.array([-self.x, -self.y]).T
-        return np.dot(rotation_mat, (points + translation).T)
+        rotation_mat = np.array([[np.cos(self.theta), -np.sin(self.theta)],[np.sin(self.theta), np.cos(self.theta)]])
+        translation = np.array([self.x, self.y]).T
+        return np.dot(rotation_mat, points.T) + translation.reshape((2,1))
 
 class ParticleFilter(Node):
     """ The class that represents a Particle Filter ROS Node
@@ -82,15 +82,17 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 1          # the number of particles to use
+        self.n_particles = 100          # the number of particles to use
 
         self.d_thresh = 0.02             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
-        self.xy_sigma = 0
-        self.theta_sigma = 0
-        # self.xy_sigma = 0.1
-        # self.theta_sigma = 0.1
+        self.xy_sigma = 0.05
+        self.theta_sigma = 0.05
+        self.xy_sigma_odom = 0.1
+        self.theta_sigma_odom = 0.1
+        self.xy_sigma_init = 0.4
+        self.theta_sigma = 0.3
         self.close_obs_dist = 0.01
         self.lidar_offset = -0.084
 
@@ -196,14 +198,8 @@ class ParticleFilter(Node):
         """
         # first make sure that the particle weights are normalized
         self.normalize_particles()
-
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        # just to get started we will fix the robot's pose to always be at the origin
-
-        # best_particle = self.particle_cloud[np.argmax([p.w for p in self.particle_cloud])]
-        best_particle = self.particle_cloud[0]
+        best_particle = self.particle_cloud[np.argmax([p.w for p in self.particle_cloud])]
         self.robot_pose = self.transform_helper.convert_translation_rotation_to_pose([best_particle.x,best_particle.y,0.0], quaternion_from_euler(0,0,best_particle.theta))
-        # self.robot_pose = Pose()
         self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                         self.odom_pose)
 
@@ -226,7 +222,7 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
         delta_x_n = np.cos(self.current_odom_xy_theta[2])*delta[0] + np.sin(self.current_odom_xy_theta[2])*delta[1]
-        delta_y_n = 0
+        delta_y_n = -np.sin(self.current_odom_xy_theta[2])*delta[0] + np.cos(self.current_odom_xy_theta[2])*delta[1]
         for p in self.particle_cloud:
             p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n
             p.y += np.sin(p.theta)*delta_x_n + np.cos(p.theta)*delta_y_n
@@ -256,36 +252,13 @@ class ParticleFilter(Node):
         """
         # transform laser to xy in particle neato frame
         scan_xy_n = np.array([np.cos(theta)*r, np.sin(theta)*r]).T + np.array([self.lidar_offset, 0])
-        header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
-        marker = Marker(
-                    header=header,
-                    ns="marker",
-                    id=0,
-                    type=Marker.POINTS,
-                    action=0,
-                    pose=Pose(),
-                    scale=Vector3(x=1.0, y=1.0, z=1.0),
-                    lifetime=builtin_interfaces.msg.Duration(sec=0),
-                )
-        points = []
-        colors = []
-        for a in scan_xy_n:
-            points.append(Point(x=a[0], y=a[1], z=0.0))
-            colors.append(ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0))
-        print(len(points))
-        marker.points = points
-        marker.colors = colors
-        self.scan_test_pub.publish(marker)
-        return
         for p in self.particle_cloud:
             p.w = 0 # Reset particle weight
             scan_xy_p = p.transform_points_particle_to_map_frame(scan_xy_n).T
             for point in scan_xy_p:
                 closest_obs = self.occupancy_field.get_closest_obstacle_distance(point[0], point[1])
-                print(f"Point: {point}, close: {closest_obs}")
                 if not math.isnan(closest_obs) and closest_obs < self.close_obs_dist:
                     p.w += 1
-            print(p.w)
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -302,8 +275,8 @@ class ParticleFilter(Node):
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
         for _ in range(self.n_particles):
-            x_noise = np.random.randn()*self.xy_sigma
-            y_noise = np.random.randn()*self.xy_sigma
+            x_noise = np.random.randn()*self.xy_sigma_init
+            y_noise = np.random.randn()*self.xy_sigma_init
             theta_noise = np.random.randn()*self.theta_sigma
             self.particle_cloud.append(Particle(xy_theta[0] + x_noise, xy_theta[1] + y_noise, self.transform_helper.angle_normalize(xy_theta[2] + theta_noise), 1/self.n_particles))
 
