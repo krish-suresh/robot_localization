@@ -7,9 +7,10 @@ import rclpy
 from threading import Thread
 from rclpy.time import Time
 from rclpy.node import Node
-from std_msgs.msg import Header
+from std_msgs.msg import Header, ColorRGBA
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose, Point, Quaternion
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose, Point, Quaternion, Vector3
+from visualization_msgs.msg import Marker, MarkerArray
 from rclpy.duration import Duration
 import math
 import time
@@ -18,6 +19,7 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper, draw_random_sample
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
+import builtin_interfaces.msg
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -80,9 +82,9 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 100          # the number of particles to use
+        self.n_particles = 1          # the number of particles to use
 
-        self.d_thresh = 0.2             # the amount of linear movement before performing an update
+        self.d_thresh = 0.02             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         self.xy_sigma = 0
@@ -90,13 +92,15 @@ class ParticleFilter(Node):
         # self.xy_sigma = 0.1
         # self.theta_sigma = 0.1
         self.close_obs_dist = 0.01
-        self.lidar_offset = 0.04
+        self.lidar_offset = -0.084
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
 
         # publish the current particle cloud.  This enables viewing particles in rviz.
         self.particle_pub = self.create_publisher(PoseArray, "particlecloud", qos_profile_sensor_data)
+
+        self.scan_test_pub = self.create_publisher(Marker, "test", qos_profile_sensor_data)
 
         # laser_subscriber listens for data from the lidar
         self.create_subscription(LaserScan, self.scan_topic, self.scan_received, 10)
@@ -172,7 +176,7 @@ class ParticleFilter(Node):
         elif self.moved_far_enough_to_update(new_odom_xy_theta):
             # we have moved far enough to do an update!
             self.update_particles_with_odom()    # update based on odometry
-            # self.update_particles_with_laser(r, theta)   # update based on laser scan
+            self.update_particles_with_laser(r, theta)   # update based on laser scan
             self.update_robot_pose()                # update robot's pose based on particles
             self.resample_particles()               # resample particles to focus on areas of high density
         # publish particles (so things like rviz can see them)
@@ -195,12 +199,11 @@ class ParticleFilter(Node):
 
         # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         # just to get started we will fix the robot's pose to always be at the origin
-        best_particle = self.particle_cloud[np.argmax([p.w for p in self.particle_cloud])]
-        print("Update RObot")
-        print([best_particle.x,best_particle.y,0.0])
-        print(quaternion_from_euler(0,0,best_particle.theta))
+
+        # best_particle = self.particle_cloud[np.argmax([p.w for p in self.particle_cloud])]
+        best_particle = self.particle_cloud[0]
         self.robot_pose = self.transform_helper.convert_translation_rotation_to_pose([best_particle.x,best_particle.y,0.0], quaternion_from_euler(0,0,best_particle.theta))
-        self.robot_pose = Pose()
+        # self.robot_pose = Pose()
         self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                         self.odom_pose)
 
@@ -223,7 +226,6 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
         delta_x_n = np.cos(self.current_odom_xy_theta[2])*delta[0] + np.sin(self.current_odom_xy_theta[2])*delta[1]
-        print(delta_x_n)
         delta_y_n = 0
         for p in self.particle_cloud:
             p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n
@@ -254,21 +256,42 @@ class ParticleFilter(Node):
         """
         # transform laser to xy in particle neato frame
         scan_xy_n = np.array([np.cos(theta)*r, np.sin(theta)*r]).T + np.array([self.lidar_offset, 0])
+        header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
+        marker = Marker(
+                    header=header,
+                    ns="marker",
+                    id=0,
+                    type=Marker.POINTS,
+                    action=0,
+                    pose=Pose(),
+                    scale=Vector3(x=1.0, y=1.0, z=1.0),
+                    lifetime=builtin_interfaces.msg.Duration(sec=0),
+                )
+        points = []
+        colors = []
+        for a in scan_xy_n:
+            points.append(Point(x=a[0], y=a[1], z=0.0))
+            colors.append(ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0))
+        print(len(points))
+        marker.points = points
+        marker.colors = colors
+        self.scan_test_pub.publish(marker)
+        return
         for p in self.particle_cloud:
             p.w = 0 # Reset particle weight
-            scan_xy_p = p.transform_points_particle_to_map_frame(scan_xy_n)
+            scan_xy_p = p.transform_points_particle_to_map_frame(scan_xy_n).T
             for point in scan_xy_p:
                 closest_obs = self.occupancy_field.get_closest_obstacle_distance(point[0], point[1])
+                print(f"Point: {point}, close: {closest_obs}")
                 if not math.isnan(closest_obs) and closest_obs < self.close_obs_dist:
                     p.w += 1
+            print(p.w)
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
             These pose estimates could be generated by another ROS Node or could come from the rviz GUI """
         xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
         self.initialize_particle_cloud(msg.header.stamp, xy_theta)
-        print("Init")
-        print(xy_theta)
 
     def initialize_particle_cloud(self, timestamp, xy_theta=None):
         """ Initialize the particle cloud.
