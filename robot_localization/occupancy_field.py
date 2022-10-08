@@ -7,6 +7,7 @@ from nav_msgs.srv import GetMap
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
+
 class OccupancyField(object):
     """ Stores an occupancy field for an input map.  An occupancy field returns
         the distance to the closest obstacle for any coordinate in the map
@@ -24,7 +25,8 @@ class OccupancyField(object):
         self.future = self.cli.call_async(GetMap.Request())
         rclpy.spin_until_future_complete(node, self.future)
         self.map = self.future.result().map
-        node.get_logger().info("map received width: {0} height: {1}".format(self.map.info.width, self.map.info.height))
+        node.get_logger().info("map received width: {0} height: {1}".format(
+            self.map.info.width, self.map.info.height))
         # The coordinates of each grid cell in the map
         X = np.zeros((self.map.info.width*self.map.info.height, 2))
 
@@ -41,6 +43,7 @@ class OccupancyField(object):
                 X[curr, 1] = float(j)
                 curr += 1
 
+        self.free_points = []
         # The coordinates of each occupied grid cell in the map
         occupied = np.zeros((total_occupied, 2))
         curr = 0
@@ -48,10 +51,14 @@ class OccupancyField(object):
             for j in range(self.map.info.height):
                 # occupancy grids are stored in row major order
                 ind = i + j*self.map.info.width
+                if (self.map.data[ind]) == 0:
+                    self.free_points.append((i*self.map.info.resolution + self.map.info.origin.position.x,
+                                            j*self.map.info.resolution + self.map.info.origin.position.y))
                 if self.map.data[ind] > 0:
                     occupied[curr, 0] = float(i)
                     occupied[curr, 1] = float(j)
                     curr += 1
+        self.free_points = np.array(self.free_points)
         node.get_logger().info("building ball tree")
         # use super fast scikit learn nearest neighbor algorithm
         nbrs = NearestNeighbors(n_neighbors=1,
@@ -60,7 +67,8 @@ class OccupancyField(object):
         distances, indices = nbrs.kneighbors(X)
 
         node.get_logger().info("populating occupancy field")
-        self.closest_occ = np.zeros((self.map.info.width, self.map.info.height))
+        self.closest_occ = np.zeros(
+            (self.map.info.width, self.map.info.height))
         curr = 0
         for i in range(self.map.info.width):
             for j in range(self.map.info.height):
@@ -88,8 +96,10 @@ class OccupancyField(object):
         """ Compute the closest obstacle to the specified (x,y) coordinate in
             the map.  If the (x,y) coordinate is out of the map boundaries, nan
             will be returned. """
-        x_coord = (x - self.map.info.origin.position.x)/self.map.info.resolution
-        y_coord = (y - self.map.info.origin.position.y)/self.map.info.resolution
+        x_coord = (x - self.map.info.origin.position.x) / \
+            self.map.info.resolution
+        y_coord = (y - self.map.info.origin.position.y) / \
+            self.map.info.resolution
         if type(x) is np.ndarray:
             x_coord = x_coord.astype(np.int)
             y_coord = y_coord.astype(np.int)
@@ -99,10 +109,38 @@ class OccupancyField(object):
             x_coord = int(x_coord)
             y_coord = int(y_coord)
 
-        is_valid = (x_coord >= 0) & (y_coord >= 0) & (x_coord < self.map.info.width) & (y_coord < self.map.info.height)
+        is_valid = (x_coord >= 0) & (y_coord >= 0) & (
+            x_coord < self.map.info.width) & (y_coord < self.map.info.height)
         if type(x) is np.ndarray:
             distances = np.float('nan')*np.ones(x_coord.shape)
-            distances[is_valid] = self.closest_occ[x_coord[is_valid], y_coord[is_valid]]
+            distances[is_valid] = self.closest_occ[x_coord[is_valid],
+                                                   y_coord[is_valid]]
             return distances
         else:
             return self.closest_occ[x_coord, y_coord] if is_valid else float('nan')
+
+    def n_random_free_point(self, n):
+        print(len(self.free_points))
+        points = self.free_points[np.random.choice(len(self.free_points), n)]
+        print(len(points))
+        return points
+
+    def is_free_position(self, x, y):
+        x_coord = (x - self.map.info.origin.position.x) / \
+            self.map.info.resolution
+        y_coord = (y - self.map.info.origin.position.y) / \
+            self.map.info.resolution
+        if type(x) is np.ndarray:
+            x_coord = x_coord.astype(np.int)
+            y_coord = y_coord.astype(np.int)
+        else:
+            if isinf(x_coord) or isinf(y_coord):
+                return float("nan")
+            x_coord = int(x_coord)
+            y_coord = int(y_coord)
+        ind = x_coord + y_coord*self.map.info.width
+        is_valid = (x_coord >= 0) & (y_coord >= 0) & (
+            x_coord < self.map.info.width) & (y_coord < self.map.info.height)
+        if not is_valid:
+            return False
+        return 0 == self.map.data[ind]
