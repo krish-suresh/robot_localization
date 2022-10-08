@@ -93,7 +93,7 @@ class ParticleFilter(Node):
         self.theta_sigma_odom = 0.1
         self.xy_sigma_init = 0.4
         self.theta_sigma = 0.3
-        self.close_obs_dist = 0.01
+        self.close_obs_dist = 0.05
         self.lidar_offset = -0.084
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
@@ -225,9 +225,9 @@ class ParticleFilter(Node):
         delta_x_n = np.cos(self.current_odom_xy_theta[2])*delta[0] + np.sin(self.current_odom_xy_theta[2])*delta[1]
         delta_y_n = -np.sin(self.current_odom_xy_theta[2])*delta[0] + np.cos(self.current_odom_xy_theta[2])*delta[1]
         for p in self.particle_cloud:
-            p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n
-            p.y += np.sin(p.theta)*delta_x_n + np.cos(p.theta)*delta_y_n
-            p.theta = self.transform_helper.angle_normalize(p.theta + delta[2])
+            p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
+            p.y += np.sin(p.theta)*delta_x_n + np.cos(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
+            p.theta = self.transform_helper.angle_normalize(p.theta + delta[2]) + self.theta_sigma_odom*np.random.randn()
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
