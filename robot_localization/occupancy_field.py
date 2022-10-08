@@ -120,10 +120,7 @@ class OccupancyField(object):
             return self.closest_occ[x_coord, y_coord] if is_valid else float('nan')
 
     def n_random_free_point(self, n):
-        print(len(self.free_points))
-        points = self.free_points[np.random.choice(len(self.free_points), n)]
-        print(len(points))
-        return points
+        return self.free_points[np.random.choice(len(self.free_points), n)]
 
     def is_free_position(self, x, y):
         x_coord = (x - self.map.info.origin.position.x) / \

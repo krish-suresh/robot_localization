@@ -82,18 +82,22 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 1000          # the number of particles to use
+        self.n_particles = 10000          # the number of particles to use
+        self.particle_decay_rate = 0.98
 
         self.d_thresh = 0.02             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
-        self.xy_sigma = 0.05
+        self.xy_sigma = 0.07
         self.theta_sigma = 0.05
+
         self.xy_sigma_odom = 0.1
         self.theta_sigma_odom = 0.1
+
         self.xy_sigma_init = 0.4
         self.theta_sigma = 0.3
-        self.close_obs_dist = 0.05
+
+        self.close_obs_dist = 0.01
         self.lidar_offset = -0.084
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
@@ -147,6 +151,7 @@ class ParticleFilter(Node):
             
             You do not need to modify this function, but it is helpful to understand it.
         """
+        start = time.perf_counter()
         if self.scan_to_process is None:
             return
         msg = self.scan_to_process
@@ -163,27 +168,34 @@ class ParticleFilter(Node):
         
         (r, theta) = self.transform_helper.convert_scan_to_polar_in_robot_frame(msg, self.base_frame)
         # print("r[0]={0}, theta[0]={1}".format(r[0], theta[0]))
-        print(len(self.particle_cloud))
         # clear the current scan so that we can process the next one
         self.scan_to_process = None
 
         self.odom_pose = new_pose
         new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         # print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
-
+        # print(f"START IF {time.perf_counter() - start}")
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
         elif not self.particle_cloud:
             # now that we have all of the necessary transforms we can update the particle cloud
             self.initialize_particle_cloud_kidnap()
+            #  print(f"INIT {time.perf_counter() - start}")
         elif self.moved_far_enough_to_update(new_odom_xy_theta):
             # we have moved far enough to do an update!
+            # print(f"BEFORE UPDATES {time.perf_counter() - start}")
             self.update_particles_with_odom()    # update based on odometry
+            # print(f"ODOM {time.perf_counter() - start}")
             self.update_particles_with_laser(r, theta)   # update based on laser scan
+            # print(f"LASER {time.perf_counter() - start}")
             self.update_robot_pose()                # update robot's pose based on particles
+            # print(f"POSE {time.perf_counter() - start}")
+            self.n_particles = int(self.n_particles*self.particle_decay_rate)
             self.resample_particles()               # resample particles to focus on areas of high density
+            # print(f"RESAMPLE {time.perf_counter() - start}")
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg.header.stamp)
+        # print(f"PUBLISH {time.perf_counter() - start}")
 
     def moved_far_enough_to_update(self, new_odom_xy_theta):
         return math.fabs(new_odom_xy_theta[0] - self.current_odom_xy_theta[0]) > self.d_thresh or \
@@ -228,6 +240,8 @@ class ParticleFilter(Node):
             p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
             p.y += np.sin(p.theta)*delta_x_n + np.cos(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
             p.theta = self.transform_helper.angle_normalize(p.theta + delta[2]) + self.theta_sigma_odom*np.random.randn()
+            if not self.occupancy_field.is_free_position(p.x, p.y):
+                self.particle_cloud.remove(p)
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -238,7 +252,7 @@ class ParticleFilter(Node):
         # make sure the distribution is normalized
         self.normalize_particles()
         weights = [p.w for p in self.particle_cloud]
-        random_sample : List[Particle] = draw_random_sample(self.particle_cloud, weights, len(self.particle_cloud))
+        random_sample : List[Particle] = draw_random_sample(self.particle_cloud, weights, self.n_particles)
         self.particle_cloud = []
         for p in random_sample: 
             p.x = np.random.randn()*self.xy_sigma + p.x
@@ -282,7 +296,6 @@ class ParticleFilter(Node):
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
-        print(f"MAP {self.occupancy_field.map.data}")
         for _ in range(self.n_particles):
             x_noise = np.random.randn()*self.xy_sigma_init
             y_noise = np.random.randn()*self.xy_sigma_init
