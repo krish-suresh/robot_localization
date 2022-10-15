@@ -7,10 +7,10 @@ import rclpy
 from threading import Thread
 from rclpy.time import Time
 from rclpy.node import Node
-from std_msgs.msg import Header, ColorRGBA
+from std_msgs.msg import Header
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose, Point, Quaternion, Vector3
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import Marker
 from rclpy.duration import Duration
 import math
 import time
@@ -19,7 +19,6 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper, draw_random_sample
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
-import builtin_interfaces.msg
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -88,17 +87,17 @@ class ParticleFilter(Node):
         self.d_thresh = 0.02             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
-        self.xy_sigma = 0.07
-        self.theta_sigma = 0.05
+        self.xy_sigma = 0.07            # SD coefficient for x,y coordinates
+        self.theta_sigma = 0.3          # SD deviation coefficient for theta value
 
-        self.xy_sigma_odom = 0.1
-        self.theta_sigma_odom = 0.1
+        self.xy_sigma_odom = 0.1        # SD coefficient for the odom x,y coordinates
+        self.theta_sigma_odom = 0.1     # SD coefficient for the odom theta value
 
-        self.xy_sigma_init = 0.4
-        self.theta_sigma = 0.3
+        self.xy_sigma_init = 0.4        # SD coefficient for the initial x,y coordinates
+        self.theta_sigma_init = 0.3     # SD coefficient for the initial theta value
 
-        self.close_obs_dist = 0.01
-        self.lidar_offset = -0.084
+        self.close_obs_dist = 0.01      # Initialize closest obsticale distance
+        self.lidar_offset = -0.084      # Lidar posiiton on the NEATO. Set to 0 for the Turtlebot
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -225,7 +224,6 @@ class ParticleFilter(Node):
         new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         # compute the change in x,y,theta since our last update
         if self.current_odom_xy_theta:
-            old_odom_xy_theta = self.current_odom_xy_theta
             delta = (new_odom_xy_theta[0] - self.current_odom_xy_theta[0],
                      new_odom_xy_theta[1] - self.current_odom_xy_theta[1],
                      new_odom_xy_theta[2] - self.current_odom_xy_theta[2])
@@ -234,9 +232,11 @@ class ParticleFilter(Node):
         else:
             self.current_odom_xy_theta = new_odom_xy_theta
             return
+        # Convert from map frame to robot frame 
         delta_x_n = np.cos(self.current_odom_xy_theta[2])*delta[0] + np.sin(self.current_odom_xy_theta[2])*delta[1]
         delta_y_n = -np.sin(self.current_odom_xy_theta[2])*delta[0] + np.cos(self.current_odom_xy_theta[2])*delta[1]
         for p in self.particle_cloud:
+            # Apply transformation to particles
             p.x += np.cos(p.theta)*delta_x_n - np.sin(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
             p.y += np.sin(p.theta)*delta_x_n + np.cos(p.theta)*delta_y_n + self.xy_sigma_odom*np.random.randn()
             p.theta = self.transform_helper.angle_normalize(p.theta + delta[2]) + self.theta_sigma_odom*np.random.randn()
@@ -251,10 +251,12 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        weights = [p.w for p in self.particle_cloud]
+        weights = [p.w for p in self.particle_cloud]\
+        # get a random smaple of the particles
         random_sample : List[Particle] = draw_random_sample(self.particle_cloud, weights, self.n_particles)
         self.particle_cloud = []
         for p in random_sample: 
+            # Resample particle values based on the new weights
             p.x = np.random.randn()*self.xy_sigma + p.x
             p.y = np.random.randn()*self.xy_sigma + p.y
             p.theta = self.transform_helper.angle_normalize(np.random.randn()*self.theta_sigma + p.theta)
@@ -280,9 +282,14 @@ class ParticleFilter(Node):
         self.initialize_particle_cloud(msg.header.stamp, xy_theta)
 
     def initialize_particle_cloud_kidnap(self):
+        """
+        Initialize particle cloud into empty spaces on the map
+        """
         self.particle_cloud = []
+        # use n_random_free_point to occupy free space in the map
         points = self.occupancy_field.n_random_free_point(self.n_particles)
         for point in points:
+            # randomize the particle placement
             x_noise = np.random.randn()*self.xy_sigma_init
             y_noise = np.random.randn()*self.xy_sigma_init
             theta = np.random.uniform(low=-np.pi, high=np.pi)
@@ -299,7 +306,7 @@ class ParticleFilter(Node):
         for _ in range(self.n_particles):
             x_noise = np.random.randn()*self.xy_sigma_init
             y_noise = np.random.randn()*self.xy_sigma_init
-            theta_noise = np.random.randn()*self.theta_sigma
+            theta_noise = np.random.randn()*self.theta_sigma_init
             x = xy_theta[0] + x_noise
             y = xy_theta[1] + y_noise
             theta = self.transform_helper.angle_normalize(xy_theta[2] + theta_noise)
