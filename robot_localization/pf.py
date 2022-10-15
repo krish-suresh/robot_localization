@@ -286,8 +286,10 @@ class ParticleFilter(Node):
         Initialize particle cloud into empty spaces on the map
         """
         self.particle_cloud = []
+        # use n_random_free_point to occupy free space in the map
         points = self.occupancy_field.n_random_free_point(self.n_particles)
         for point in points:
+            # randomize the particle placement
             x_noise = np.random.randn()*self.xy_sigma_init
             y_noise = np.random.randn()*self.xy_sigma_init
             theta = np.random.uniform(low=-np.pi, high=np.pi)
